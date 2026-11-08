@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 
 const app = express();
 
@@ -63,6 +63,22 @@ app.get("/jobs", async (req, res) => {
   } catch (error) {
     console.error("Error getting jobs:", error);
     res.status(500).send({ success: false, message: "Failed to get jobs" });
+  }
+});
+
+//job delete api
+app.delete("/jobs/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await jobsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: error.message });
   }
 });
 
