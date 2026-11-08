@@ -54,6 +54,18 @@ app.post("/jobs", async (req, res) => {
   }
 });
 
+//job api get
+
+app.get("/jobs", async (req, res) => {
+  try {
+    const jobs = await jobsCollection.find().toArray();
+    res.send(jobs);
+  } catch (error) {
+    console.error("Error getting jobs:", error);
+    res.status(500).send({ success: false, message: "Failed to get jobs" });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Hireloop server is running on port: ${port}`);
 });
