@@ -66,13 +66,18 @@ app.get("/jobs", async (req, res) => {
   try {
     const query = {};
 
-    const { companyName, location, jobType, isRemote, search } = req.query;
+    const { companyName, location, jobType, category, isRemote, search } =
+      req.query;
 
     if (companyName) {
       query.companyName = {
         $regex: companyName,
         $options: "i",
       };
+    }
+
+    if (category) {
+      query.category = category;
     }
 
     if (jobType) {
@@ -93,6 +98,8 @@ app.get("/jobs", async (req, res) => {
     if (search) {
       query.$or = [
         { title: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+        { jobType: { $regex: search, $options: "i" } },
         { companyName: { $regex: search, $options: "i" } },
         { location: { $regex: search, $options: "i" } },
       ];
@@ -119,6 +126,20 @@ app.delete("/jobs/:id", async (req, res) => {
     });
 
     res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: error.message });
+  }
+});
+
+//job details api
+app.get("/jobs/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const job = await jobsCollection.findOne({ _id: new ObjectId(id) });
+
+    res.send(job);
   } catch (error) {
     console.error(error);
     res.status(500).send({ message: error.message });
