@@ -314,4 +314,4 @@ app.listen(port, () => {
   console.log(`Hireloop server is running on port: ${port}`);
 });
 
-export app;
+export default app();
