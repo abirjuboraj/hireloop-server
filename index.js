@@ -9,10 +9,7 @@ const port = process.env.PORT || 5000;
 
 // Allow the client's origin with credentials so the better-auth session cookie reaches us.
 app.use(
-  cors({
-    origin: true,
-    credentials: true,
-  })
+  cors()
 );
 app.use(express.json());
 
