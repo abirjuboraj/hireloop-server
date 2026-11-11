@@ -7,17 +7,7 @@ const app = express();
 
 const port = process.env.PORT || 5000;
 
-// Allow the client's origin with credentials so the better-auth session cookie reaches us.
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN?.split(",") ?? [
-  "http://localhost:3000",
-];
-
-app.use(
-  cors({
-    origin: CLIENT_ORIGIN,
-    credentials: true,
-  })
-);
+app.use(cors());
 app.use(express.json());
 
 const client = new MongoClient(
@@ -42,68 +32,6 @@ const usersCollection = db.collection("user");
 const jobsCollection = db.collection("jobs");
 const applicationsCollection = db.collection("applications");
 
-const SESSION_COOKIE = "better-auth.session_token";
-
-function parseCookies(req) {
-  const cookies = {};
-  const header = req.headers.cookie;
-  if (!header) return cookies;
-
-  for (const part of header.split(";")) {
-    const [name, ...rest] = part.trim().split("=");
-    cookies[name] = decodeURIComponent(rest.join("="));
-  }
-  return cookies;
-}
-
-/**
- * Resolves the signed-in user (seeker, recruiter or admin) from the
- * better-auth session cookie — the frontend never sends any user info.
- * Attaches the user document (or null) to req.user.
- */
-async function attachUser(req, res, next) {
-  req.user = null;
-
-  try {
-    const token = parseCookies(req)[SESSION_COOKIE]?.split(".")[0];
-
-    if (token) {
-      const session = await db.collection("session").findOne({ token });
-
-      if (session && new Date(session.expiresAt) > new Date()) {
-        // userId may be stored as an ObjectId or a hex string depending on the adapter version.
-        let user = await db.collection("user").findOne({ _id: session.userId });
-
-        if (!user) {
-          try {
-            user = await db
-              .collection("user")
-              .findOne({ _id: new ObjectId(session.userId) });
-          } catch {}
-        }
-
-        if (user) req.user = user;
-      }
-    }
-  } catch (error) {
-    console.error("Session lookup failed:", error);
-  }
-
-  next();
-}
-
-/** Blocks requests without a valid session. */
-function requireUser(req, res, next) {
-  if (!req.user) {
-    return res
-      .status(401)
-      .send({ success: false, message: "Authentication required" });
-  }
-  next();
-}
-
-app.use(attachUser);
-
 app.get("/", (req, res) => {
   res.send("Hireloop server is running");
 });
@@ -117,15 +45,16 @@ app.get("/users", async (req, res) => {
 
 //job post api
 
-app.post("/jobs", requireUser, async (req, res) => {
+app.post("/jobs", async (req, res) => {
   try {
     const job = req.body;
 
-    // The recruiter identity comes from the session, never from the client.
+    // User identity (recruiterId/recruiterEmail) is sent from the frontend
+    // session for now — JWT-based auth will replace this later.
     const newJob = {
       ...job,
-      recruiterId: req.user._id.toString(),
-      recruiterEmail: req.user.email,
+      recruiterId: job.recruiterId ?? null,
+      recruiterEmail: job.recruiterEmail ?? null,
     };
 
     const result = await jobsCollection.insertOne(newJob);
@@ -228,29 +157,21 @@ app.get("/jobs/:id", async (req, res) => {
 });
 
 // application post api
-app.post("/applications", requireUser, async (req, res) => {
+app.post("/applications", async (req, res) => {
   try {
-    const { jobId } = req.body;
+    const { jobId, seekerId } = req.body;
 
-    if (!jobId) {
+    // User identity (seekerId/seekerEmail) is sent from the frontend session.
+    if (!jobId || !seekerId) {
       return res
         .status(400)
-        .send({ success: false, message: "jobId is required" });
+        .send({ success: false, message: "jobId and seekerId are required" });
     }
-
-    // The recruiter id comes from the stored job (null when the job has none).
-    let job = null;
-    try {
-      job = await jobsCollection.findOne({ _id: new ObjectId(jobId) });
-    } catch {}
 
     const newApplication = {
       ...req.body,
       jobId,
-      // Identity comes from the session — any role (seeker/admin/recruiter) is accepted.
-      seekerId: req.user._id.toString(),
-      seekerEmail: req.user.email,
-      recruiterId: job?.recruiterId ?? null,
+      recruiterId: req.body.recruiterId ?? null,
       status: "Applied",
       appliedAt: new Date(),
       archived: false,
@@ -259,6 +180,11 @@ app.post("/applications", requireUser, async (req, res) => {
     const result = await applicationsCollection.insertOne(newApplication);
 
     // Bump the applicant count on the job.
+    let job = null;
+    try {
+      job = await jobsCollection.findOne({ _id: new ObjectId(jobId) });
+    } catch {}
+
     if (job) {
       await jobsCollection.updateOne(
         { _id: job._id },
@@ -281,12 +207,18 @@ app.post("/applications", requireUser, async (req, res) => {
   }
 });
 
-// applications get api — returns the signed-in user's applications
-app.get("/applications", requireUser, async (req, res) => {
+// applications get api — seekerId comes from the frontend session
+app.get("/applications", async (req, res) => {
   try {
-    const query = { seekerId: req.user._id.toString() };
+    const { seekerId, search, archived } = req.query;
 
-    const { search, archived } = req.query;
+    if (!seekerId) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Job seeker Id is required" });
+    }
+
+    const query = { seekerId };
 
     if (archived !== undefined) {
       query.archived = archived === "true";
