@@ -313,3 +313,5 @@ app.get("/applications", requireUser, async (req, res) => {
 app.listen(port, () => {
   console.log(`Hireloop server is running on port: ${port}`);
 });
+
+export app;
