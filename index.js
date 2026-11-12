@@ -246,6 +246,32 @@ app.get("/applications", async (req, res) => {
   }
 });
 
+//application count
+app.get("/applications/count", async (req, res) => {
+  try {
+    const { seekerId } = req.query;
+
+    if (!seekerId) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Job seeker Id is required" });
+    }
+
+    const query = { seekerId };
+
+    const applicationsCount = await applicationsCollection
+      .countDocuments(query)
+      
+
+    res.send({count: applicationsCount});
+  } catch (error) {
+    console.error("Error getting applications count:", error);
+    res.status(500).send({
+      success: false,
+      message: "Failed to get applications count",
+    });
+  }
+});
 app.listen(port, () => {
   console.log(`Hireloop server is running on port: ${port}`);
 });
