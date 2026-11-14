@@ -88,6 +88,9 @@ app.get("/users/:id/plan", async (req, res) => {
   }
 });
 
+
+// job related api
+
 //job post api
 
 app.post("/jobs", async (req, res) => {
@@ -121,7 +124,7 @@ app.get("/jobs", async (req, res) => {
   try {
     const query = {};
 
-    const { companyName, location, jobType, category, isRemote, search } =
+    const { companyName, location, jobType, category, isRemote, search, recruiterId } =
       req.query;
 
     if (companyName) {
@@ -160,6 +163,10 @@ app.get("/jobs", async (req, res) => {
       ];
     }
 
+    if(recruiterId){
+      query.recruiterId = recruiterId;
+    }
+
     const jobs = await jobsCollection.find(query).toArray();
 
     res.send(jobs);
@@ -171,6 +178,7 @@ app.get("/jobs", async (req, res) => {
     });
   }
 });
+
 //job delete api
 app.delete("/jobs/:id", async (req, res) => {
   try {
@@ -200,6 +208,9 @@ app.get("/jobs/:id", async (req, res) => {
     res.status(500).send({ message: error.message });
   }
 });
+
+
+//application related api
 
 // application post api
 app.post("/applications", async (req, res) => {
@@ -252,18 +263,29 @@ app.post("/applications", async (req, res) => {
   }
 });
 
-// applications get api — seekerId comes from the frontend session
+// applications get api — used by BOTH sides:
+//   seekers:    ?seekerId=...  → their own applications
+//   recruiters: ?jobId=...     → everyone who applied to one specific job
 app.get("/applications", async (req, res) => {
   try {
-    const { seekerId, search, archived } = req.query;
+    const { seekerId, jobId, search, archived } = req.query;
 
-    if (!seekerId) {
+    // A request must identify whose data to load — either one seeker's
+    // applications or one job's applicant list.
+    if (!seekerId && !jobId) {
       return res
         .status(400)
-        .send({ success: false, message: "Job seeker Id is required" });
+        .send({ success: false, message: "seekerId or jobId is required" });
     }
 
-    const query = { seekerId };
+    console.log(
+      `[applications] Fetching — ${seekerId ? `seekerId=${seekerId}` : `jobId=${jobId}`}`
+    );
+
+    const query = {};
+
+    if (seekerId) query.seekerId = seekerId;
+    if (jobId) query.jobId = jobId;
 
     if (archived !== undefined) {
       query.archived = archived === "true";
@@ -281,6 +303,35 @@ app.get("/applications", async (req, res) => {
       .sort({ appliedAt: -1 })
       .toArray();
 
+    // Recruiters need to see WHO applied. Applications only store the
+    // seekerId + email snapshot, so look up each user and attach their name
+    // (sent back as `applicantName` for the recruiter's applicants table).
+    const seekerIds = [
+      ...new Set(applications.map((a) => a.seekerId).filter(Boolean)),
+    ];
+
+    if (seekerIds.length > 0) {
+      // User documents are stored with plain string _ids (better-auth), but
+      // include the ObjectId form too so both storage styles always match.
+      const idVariants = seekerIds.flatMap((id) =>
+        /^[a-f\d]{24}$/i.test(id) ? [id, new ObjectId(id)] : [id]
+      );
+
+      const users = await usersCollection
+        .find({ _id: { $in: idVariants } })
+        .toArray();
+      const usersById = new Map(users.map((u) => [u._id.toString(), u]));
+
+      console.log(
+        `[applications] Attached names for ${users.length}/${seekerIds.length} applicants`
+      );
+
+      for (const application of applications) {
+        const user = usersById.get(String(application.seekerId));
+        application.applicantName = user?.name ?? null;
+      }
+    }
+
     res.send({
       success: true,
       message: "Successfully fetched applications",
@@ -294,6 +345,30 @@ app.get("/applications", async (req, res) => {
     });
   }
 });
+
+// application status update api
+
+app.patch("/applications/:id", async(req, res)=> {
+
+ try {
+   const id = req.params.id;
+
+  const application = await applicationsCollection.updateOne({_id: new ObjectId(id)}, 
+{
+  $set : {
+    status: req.body.status,
+  }
+})
+
+res.send({success: true, message: "successfully updated application status", application});
+ } catch (error) {
+  console.log(error.message);
+
+  res.status(500).send({success: false, message: "Failed to update application status", error});
+ }
+
+
+})
 
 //application count
 app.get("/applications/count", async (req, res) => {
@@ -323,6 +398,7 @@ app.get("/applications/count", async (req, res) => {
 
 //payment related api
 
+//payment verify
 app.post("/payments/checkout-verify", async (req, res) => {
   try {
     const { sessionId, userId } = req.body;
