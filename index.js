@@ -32,9 +32,78 @@ const connectedClient = await connectToMongoDB();
 const db = connectedClient.db("hireloop");
 
 const usersCollection = db.collection("user");
+const sessions = db.collection("session");
 const jobsCollection = db.collection("jobs");
 const applicationsCollection = db.collection("applications");
 const payments = db.collection("payments");
+
+// http only cookie middleware
+
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    res.status(401).send({ message: "Unauthorized" });
+
+    return;
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  if (!token) {
+    res.status(401).send({ message: "Unauthorized" });
+
+    return;
+  }
+
+  const session = await sessions.findOne({ token });
+
+  if (!session) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const userId = session.userId;
+
+
+  const isObjectId = /^[a-f\d]{24}$/i.test(userId);
+
+  if (!isObjectId) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+
+  if (!user) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  req.user = user;
+
+  next();
+};
+
+// seeker verify middleware
+const verifySeeker = async(req, res, next)=> {
+  if(req.user.role !== "seeker"){
+    res.status(403).send({message: "Forbidden"});
+    return
+  }
+
+  next();
+}
+
+// recruiter verify middleware
+const verifyRecruiter = async(req, res, next)=> {
+  if(req.user.role !== "recruiter"){
+    res.status(403).send({message: "Forbidden"});
+    return
+  }
+
+  next();
+}
 
 app.get("/", (req, res) => {
   res.send("Hireloop server is running");
@@ -105,14 +174,11 @@ app.patch("/users/:id/role", async (req, res) => {
   } catch (error) {
     console.log(error);
 
-    res.send({success: false, message: "User role update failed", error});
+    res.send({ success: false, message: "User role update failed", error });
   }
 });
 
-// user suspend (ban) / activate api
-// NOTE: there is NO "status" field in the database. A suspended user is
-// simply a user whose `banned` field is true — the frontend sends
-// banned: true to suspend and banned: false to activate.
+//user suspend(ban) or activate api
 app.patch("/users/:id/ban", async (req, res) => {
   try {
     const id = req.params.id;
@@ -144,9 +210,6 @@ app.patch("/users/:id/ban", async (req, res) => {
 });
 
 // user delete api
-// Deletes only the user document. If you later want to clean up everything
-// related to the user, you can also delete their rows from the `session`
-// and `account` collections here.
 app.delete("/users/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -171,7 +234,7 @@ app.delete("/users/:id", async (req, res) => {
 
 //job post api
 
-app.post("/jobs", async (req, res) => {
+app.post("/jobs",verifyToken,verifyRecruiter, async (req, res) => {
   try {
     const job = req.body;
 
@@ -297,11 +360,10 @@ app.get("/jobs/:id", async (req, res) => {
 //application related api
 
 // application post api
-app.post("/applications", async (req, res) => {
+app.post("/applications",verifyToken,verifySeeker, async (req, res) => {
   try {
     const { jobId, seekerId } = req.body;
 
-    // User identity (seekerId/seekerEmail) is sent from the frontend session.
     if (!jobId || !seekerId) {
       return res
         .status(400)
@@ -319,7 +381,6 @@ app.post("/applications", async (req, res) => {
 
     const result = await applicationsCollection.insertOne(newApplication);
 
-    // Bump the applicant count on the job.
     let job = null;
     try {
       job = await jobsCollection.findOne({ _id: new ObjectId(jobId) });
@@ -347,25 +408,59 @@ app.post("/applications", async (req, res) => {
   }
 });
 
-// applications get api — used by BOTH sides:
-//   seekers:    ?seekerId=...  → their own applications
-//   recruiters: ?jobId=...     → everyone who applied to one specific job
-app.get("/applications", async (req, res) => {
+// application get...both for seeker and recruiter
+
+app.get("/applications", verifyToken, async (req, res) => {
   try {
     const { seekerId, jobId, search, archived } = req.query;
 
-    // A request must identify whose data to load — either one seeker's
-    // applications or one job's applicant list.
     if (!seekerId && !jobId) {
-      return res
-        .status(400)
-        .send({ success: false, message: "seekerId or jobId is required" });
+      return res.status(400).send({
+        success: false,
+        message: "seekerId or jobId is required",
+      });
     }
 
-    console.log(
-      `[applications] Fetching — ${seekerId ? `seekerId=${seekerId}` : `jobId=${jobId}`}`,
-    );
+    if (jobId) {
+      if (!ObjectId.isValid(jobId)) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid job ID",
+        });
+      }
 
+      const job = await jobsCollection.findOne({
+        _id: new ObjectId(jobId),
+      });
+
+      if (!job) {
+        return res.status(404).send({
+          success: false,
+          message: "Job not found",
+        });
+      }
+
+      if (String(job.recruiterId) !== String(req.user._id) && req.user.role !== "admin") {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden",
+        });
+      }
+    } else {
+      if (seekerId && !ObjectId.isValid(seekerId)) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid seeker ID",
+        });
+      }
+
+      if (String(seekerId) !== String(req.user._id)  && req.user.role !== "admin") {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden",
+        });
+      }
+    }
     const query = {};
 
     if (seekerId) query.seekerId = seekerId;
@@ -376,9 +471,11 @@ app.get("/applications", async (req, res) => {
     }
 
     if (search) {
+      const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
       query.$or = [
-        { title: { $regex: search, $options: "i" } },
-        { companyName: { $regex: search, $options: "i" } },
+        { title: { $regex: safeSearch, $options: "i" } },
+        { companyName: { $regex: safeSearch, $options: "i" } },
       ];
     }
 
@@ -387,31 +484,26 @@ app.get("/applications", async (req, res) => {
       .sort({ appliedAt: -1 })
       .toArray();
 
-    // Recruiters need to see WHO applied. Applications only store the
-    // seekerId + email snapshot, so look up each user and attach their name
-    // (sent back as `applicantName` for the recruiter's applicants table).
     const seekerIds = [
       ...new Set(applications.map((a) => a.seekerId).filter(Boolean)),
     ];
 
     if (seekerIds.length > 0) {
-      // User documents are stored with plain string _ids (better-auth), but
-      // include the ObjectId form too so both storage styles always match.
       const idVariants = seekerIds.flatMap((id) =>
         /^[a-f\d]{24}$/i.test(id) ? [id, new ObjectId(id)] : [id],
       );
 
       const users = await usersCollection
-        .find({ _id: { $in: idVariants } })
+        .find({
+          _id: { $in: idVariants },
+        })
         .toArray();
-      const usersById = new Map(users.map((u) => [u._id.toString(), u]));
 
-      console.log(
-        `[applications] Attached names for ${users.length}/${seekerIds.length} applicants`,
-      );
+      const usersById = new Map(users.map((u) => [u._id.toString(), u]));
 
       for (const application of applications) {
         const user = usersById.get(String(application.seekerId));
+
         application.applicantName = user?.name ?? null;
       }
     }
@@ -419,10 +511,11 @@ app.get("/applications", async (req, res) => {
     res.send({
       success: true,
       message: "Successfully fetched applications",
-      applications: applications,
+      applications,
     });
   } catch (error) {
     console.error("Error getting applications:", error);
+
     res.status(500).send({
       success: false,
       message: "Failed to get applications",
@@ -453,13 +546,11 @@ app.patch("/applications/:id", async (req, res) => {
   } catch (error) {
     console.log(error.message);
 
-    res
-      .status(500)
-      .send({
-        success: false,
-        message: "Failed to update application status",
-        error,
-      });
+    res.status(500).send({
+      success: false,
+      message: "Failed to update application status",
+      error,
+    });
   }
 });
 
