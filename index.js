@@ -40,6 +40,8 @@ app.get("/", (req, res) => {
   res.send("Hireloop server is running");
 });
 
+//user related api
+
 // user get api
 
 app.get("/users", async (req, res) => {
@@ -48,9 +50,7 @@ app.get("/users", async (req, res) => {
 });
 
 // user plan get api
-// NOTE: better-auth stores user documents with a plain string _id (not a Mongo
-// ObjectId), so we try ObjectId first for legacy docs and fall back to a raw
-// string lookup instead of crashing with a cast error.
+
 app.get("/users/:id/plan", async (req, res) => {
   try {
     const id = req.params.id;
@@ -62,32 +62,110 @@ app.get("/users/:id/plan", async (req, res) => {
         .send({ success: false, message: "User id is required" });
     }
 
-    // Match by ObjectId when possible, otherwise by the raw string id.
     const isObjectId = /^[a-f\d]{24}$/i.test(id);
     const userIdQuery = isObjectId ? new ObjectId(id) : id;
 
-    console.log(`[user-plan] Fetching plan for user: ${id}`);
-
     const result = await usersCollection.findOne(
       { _id: userIdQuery },
-      // Projection returns the plan flag(s) the payment flow maintains so the
-      // frontend can gate the checkout page for users who already paid.
-      { projection: { plan: 1, starter: 1, growth: 1, premium: 1 } }
+      { projection: { plan: 1, starter: 1, growth: 1, premium: 1 } },
     );
 
     if (!result) {
-      console.warn(`[user-plan] No user found for id: ${id}`);
       return res.send({ success: false, message: "User not found" });
     }
-
-    console.log(`[user-plan] Plan found for user ${id}:`, result.plan ?? null);
     res.send(result);
   } catch (error) {
     console.error("[user-plan] Error fetching user plan:", error.message);
-    res.status(500).send({ success: false, message: "Failed to get user plan" });
+    res
+      .status(500)
+      .send({ success: false, message: "Failed to get user plan" });
   }
 });
 
+//user role change api
+
+app.patch("/users/:id/role", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const updateRole = await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          role: req.body.role,
+        },
+      },
+    );
+
+    res.send({
+      updateRole,
+      success: true,
+      message: "Successfully updated user role",
+    });
+  } catch (error) {
+    console.log(error);
+
+    res.send({success: false, message: "User role update failed", error});
+  }
+});
+
+// user suspend (ban) / activate api
+// NOTE: there is NO "status" field in the database. A suspended user is
+// simply a user whose `banned` field is true — the frontend sends
+// banned: true to suspend and banned: false to activate.
+app.patch("/users/:id/ban", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // Boolean() makes sure we always store a real true/false value.
+    const banned = Boolean(req.body.banned);
+
+    const updateBan = await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          banned,
+        },
+      },
+    );
+
+    res.send({
+      updateBan,
+      success: true,
+      message: banned
+        ? "User suspended successfully"
+        : "User activated successfully",
+    });
+  } catch (error) {
+    console.log(error);
+
+    res.send({ success: false, message: "User ban update failed", error });
+  }
+});
+
+// user delete api
+// Deletes only the user document. If you later want to clean up everything
+// related to the user, you can also delete their rows from the `session`
+// and `account` collections here.
+app.delete("/users/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const deleteUser = await usersCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    res.send({
+      deleteUser,
+      success: true,
+      message: "User deleted successfully",
+    });
+  } catch (error) {
+    console.log(error);
+
+    res.send({ success: false, message: "User delete failed", error });
+  }
+});
 
 // job related api
 
@@ -124,8 +202,15 @@ app.get("/jobs", async (req, res) => {
   try {
     const query = {};
 
-    const { companyName, location, jobType, category, isRemote, search, recruiterId } =
-      req.query;
+    const {
+      companyName,
+      location,
+      jobType,
+      category,
+      isRemote,
+      search,
+      recruiterId,
+    } = req.query;
 
     if (companyName) {
       query.companyName = {
@@ -163,7 +248,7 @@ app.get("/jobs", async (req, res) => {
       ];
     }
 
-    if(recruiterId){
+    if (recruiterId) {
       query.recruiterId = recruiterId;
     }
 
@@ -208,7 +293,6 @@ app.get("/jobs/:id", async (req, res) => {
     res.status(500).send({ message: error.message });
   }
 });
-
 
 //application related api
 
@@ -279,7 +363,7 @@ app.get("/applications", async (req, res) => {
     }
 
     console.log(
-      `[applications] Fetching — ${seekerId ? `seekerId=${seekerId}` : `jobId=${jobId}`}`
+      `[applications] Fetching — ${seekerId ? `seekerId=${seekerId}` : `jobId=${jobId}`}`,
     );
 
     const query = {};
@@ -314,7 +398,7 @@ app.get("/applications", async (req, res) => {
       // User documents are stored with plain string _ids (better-auth), but
       // include the ObjectId form too so both storage styles always match.
       const idVariants = seekerIds.flatMap((id) =>
-        /^[a-f\d]{24}$/i.test(id) ? [id, new ObjectId(id)] : [id]
+        /^[a-f\d]{24}$/i.test(id) ? [id, new ObjectId(id)] : [id],
       );
 
       const users = await usersCollection
@@ -323,7 +407,7 @@ app.get("/applications", async (req, res) => {
       const usersById = new Map(users.map((u) => [u._id.toString(), u]));
 
       console.log(
-        `[applications] Attached names for ${users.length}/${seekerIds.length} applicants`
+        `[applications] Attached names for ${users.length}/${seekerIds.length} applicants`,
       );
 
       for (const application of applications) {
@@ -348,27 +432,36 @@ app.get("/applications", async (req, res) => {
 
 // application status update api
 
-app.patch("/applications/:id", async(req, res)=> {
+app.patch("/applications/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
 
- try {
-   const id = req.params.id;
+    const application = await applicationsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          status: req.body.status,
+        },
+      },
+    );
 
-  const application = await applicationsCollection.updateOne({_id: new ObjectId(id)}, 
-{
-  $set : {
-    status: req.body.status,
+    res.send({
+      success: true,
+      message: "successfully updated application status",
+      application,
+    });
+  } catch (error) {
+    console.log(error.message);
+
+    res
+      .status(500)
+      .send({
+        success: false,
+        message: "Failed to update application status",
+        error,
+      });
   }
-})
-
-res.send({success: true, message: "successfully updated application status", application});
- } catch (error) {
-  console.log(error.message);
-
-  res.status(500).send({success: false, message: "Failed to update application status", error});
- }
-
-
-})
+});
 
 //application count
 app.get("/applications/count", async (req, res) => {
@@ -410,8 +503,15 @@ app.post("/payments/checkout-verify", async (req, res) => {
 
     console.log(`[checkout-verify] Verifying Stripe session: ${sessionId}`);
 
-    const { status, payment_status, payment_intent, customer_email, metadata, amount_total, currency } =
-      await stripe.checkout.sessions.retrieve(sessionId);
+    const {
+      status,
+      payment_status,
+      payment_intent,
+      customer_email,
+      metadata,
+      amount_total,
+      currency,
+    } = await stripe.checkout.sessions.retrieve(sessionId);
 
     //1. if the session is new
     //2. check if the session id is for the currently logged in user.
@@ -419,7 +519,6 @@ app.post("/payments/checkout-verify", async (req, res) => {
     //4. update user information as plan (starter, growth, pro) user.
 
     if (status === "complete" && payment_status === "paid") {
-   
       if (!metadata?.userId) {
         console.error("[checkout-verify] Session metadata.userId is missing");
         return res.send({
@@ -430,7 +529,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
 
       if (userId && metadata.userId !== userId) {
         console.warn(
-          `[checkout-verify] User mismatch: session belongs to ${metadata.userId}, requested by ${userId}`
+          `[checkout-verify] User mismatch: session belongs to ${metadata.userId}, requested by ${userId}`,
         );
         return res.send({
           success: false,
@@ -444,9 +543,9 @@ app.post("/payments/checkout-verify", async (req, res) => {
 
       if (existingPayment) {
         console.log(
-          `[checkout-verify] Payment already verified for session: ${sessionId}`
+          `[checkout-verify] Payment already verified for session: ${sessionId}`,
         );
-  
+
         return res.send({
           success: true,
           message: "Payment already verified",
@@ -480,10 +579,9 @@ app.post("/payments/checkout-verify", async (req, res) => {
 
       const result = await payments.insertOne(payment);
       console.log(
-        `[checkout-verify] Payment record inserted (${metadata.role ?? "seeker"}/${plan}, ${amount_total / 100} ${currency}): ${result.insertedId}`
+        `[checkout-verify] Payment record inserted (${metadata.role ?? "seeker"}/${plan}, ${amount_total / 100} ${currency}): ${result.insertedId}`,
       );
 
- 
       const updatedUser = await usersCollection.updateOne(
         {
           _id: metadata.userId.match(/^[a-f\d]{24}$/i)
@@ -499,7 +597,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
         },
       );
       console.log(
-        `[checkout-verify] User plan updated to "${plan}" (matched: ${updatedUser.matchedCount}, modified: ${updatedUser.modifiedCount})`
+        `[checkout-verify] User plan updated to "${plan}" (matched: ${updatedUser.matchedCount}, modified: ${updatedUser.modifiedCount})`,
       );
 
       res.send({
@@ -514,7 +612,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
     }
 
     console.log(
-      `[checkout-verify] Session not paid yet — status: ${status}, payment_status: ${payment_status}`
+      `[checkout-verify] Session not paid yet — status: ${status}, payment_status: ${payment_status}`,
     );
     res.send({
       success: false,
@@ -525,7 +623,9 @@ app.post("/payments/checkout-verify", async (req, res) => {
   } catch (error) {
     console.error("[checkout-verify] Error:", error.message);
 
-    res.status(500).send({ success: false, message: "Payment verification failed" });
+    res
+      .status(500)
+      .send({ success: false, message: "Payment verification failed" });
   }
 });
 
