@@ -105,6 +105,17 @@ const verifyRecruiter = async(req, res, next)=> {
   next();
 }
 
+// admin verify middleware
+
+const verifyAdmin = async(req, res, next) => {
+   if(req.user.role !== "admin"){
+    res.status(403).send({message: "Forbidden"});
+    return
+  }
+
+  next();
+}
+
 app.get("/", (req, res) => {
   res.send("Hireloop server is running");
 });
@@ -113,7 +124,7 @@ app.get("/", (req, res) => {
 
 // user get api
 
-app.get("/users", async (req, res) => {
+app.get("/users",verifyToken, verifyAdmin, async (req, res) => {
   const users = await usersCollection.find().toArray();
   res.send(users);
 });
@@ -153,7 +164,7 @@ app.get("/users/:id/plan", async (req, res) => {
 
 //user role change api
 
-app.patch("/users/:id/role", async (req, res) => {
+app.patch("/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const id = req.params.id;
 
